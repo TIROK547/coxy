@@ -1,5 +1,8 @@
-import re, asyncio
+import re, asyncio, os
 from telethon import TelegramClient
+from dotenv import load_dotenv
+
+load_dotenv("../.env")
 
 API_ID = 12345  # from my.telegram.org
 API_HASH = "xxxxxxxx"

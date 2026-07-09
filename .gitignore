@@ -49,7 +49,7 @@ htmlcov/
 Thumbs.db
 
 # Generated output — never commit scrape/test results
-output/
+#output/
 data/
 *.log
 *.csv
