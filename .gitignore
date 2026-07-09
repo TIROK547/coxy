@@ -52,7 +52,7 @@ Thumbs.db
 output/
 data/
 *.log
-#*.csv
+*.csv
 *.sqlite3
 *.db
 
