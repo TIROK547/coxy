@@ -11,7 +11,7 @@ API_ID = int(os.getenv("TELEGRAM_API_ID"))
 API_HASH = os.getenv("TELEGRAM_API_HASH")
 SESSION = os.getenv("TELEGRAM_SESSION_NAME")
 
-channels_file = "../" + os.getenv("PROXY_CHANNELS_FILE")
+channels_file = os.getenv("PROXY_CHANNELS_FILE")
 
 CHANNELS = [l.strip() for l in open(channels_file) if l.strip()]
 PROXY_RE = re.compile(
