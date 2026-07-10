@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -e
 
-XRAY_KNIFE=/usr/bin/xray-knife
+set -a
+source .env
+set +a
+#XRAY_KNIFE=/usr/bin/xray-knife
 
-$XRAY_KNIFE http -f ../output/raw_configs.txt \
+$XRAY_KNIFE http -f "$RAW_CONFIGS_FILE"\
   --speedtest \
   --sort \
   --type csv \
-  -o ../output/ranked.csv \
-  --thread 20
+  -o "$OUTPUT_CONFIGS_FILE" \
+  --thread "$XRAY_KNIFE_THREADS"

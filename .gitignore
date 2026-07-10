@@ -18,7 +18,6 @@ ENV/
 # Telethon session (as sensitive as .env — grants account access)
 *.session
 *.session-journal
-raw_proxies.txt
 # Distribution / packaging
 build/
 dist/
@@ -48,11 +47,11 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# Generated output — never commit scrape/test results
-output/
+# Generated output
+#raw_proxies.txt
+#raw_configs.txt
 data/
 *.log
-*.csv
 *.sqlite3
 *.db
 
