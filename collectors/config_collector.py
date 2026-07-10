@@ -4,11 +4,13 @@ from dotenv import load_dotenv
 
 load_dotenv("../.env")
 
-API_ID = 12345  # from my.telegram.org
-API_HASH = "xxxxxxxx"
-SESSION = "collector"
+API_ID = int(os.getenv("TELEGRAM_API_ID"))
+API_HASH = os.getenv("TELEGRAM_API_HASH")
+SESSION = os.getenv("TELEGRAM_SESSION_NAME")
 
-CHANNELS = [l.strip() for l in open("channels.txt") if l.strip()]
+channels_file = "../"+os.getenv("CONFIG_CHANNELS_FILE")
+
+CHANNELS = [l.strip() for l in open(channels_file) if l.strip()]
 CONFIG_RE = re.compile(r'(vless|vmess|trojan)://[^\s<>"\']+', re.IGNORECASE)
 
 
@@ -24,6 +26,8 @@ async def main():
     seen = set()
     out = open("raw_configs.txt", "w")
 
+    limit = os.getenv("MESSAGES_PER_CHANNEL", 10)
+
     for channel in CHANNELS:
         try:
             entity = await client.get_entity(channel)
@@ -31,16 +35,16 @@ async def main():
             print(f"skip {channel}: {e}")
             continue
 
-        async for msg in client.iter_messages(entity, limit=10):
+        async for msg in client.iter_messages(entity, limit):
             if not msg.text:
                 continue
             for match in CONFIG_RE.finditer(msg.text):
-                cfg = match.group(0)
-                key = normalize(cfg)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.write(cfg + "\n")
+                for c in match.group(0):
+                    k = normalize(c)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    out.write(c + "\n")
 
     out.close()
     print(f"{len(seen)} unique configs written to raw_configs.txt")

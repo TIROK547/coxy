@@ -18,7 +18,7 @@ ENV/
 # Telethon session (as sensitive as .env — grants account access)
 *.session
 *.session-journal
-
+raw_proxies.txt
 # Distribution / packaging
 build/
 dist/
