@@ -79,6 +79,62 @@ def _socks_kwargs(scheme: str, parsed) -> dict:
     }
 
 
+def _decode_mtproxy_secret(secret: str) -> str:
+    """
+    Normalize an MTProxy secret to a plain 16-byte hex string, regardless of
+    how it was originally encoded. Secrets show up in a few forms:
+
+      - plain hex, 32 chars (16 bytes)              — "simple" secret
+      - hex with a dd/ee prefix byte, 34+ chars      — random-padding / fake-TLS secret
+      - base64 or base64url, no hex at all           — used by some proxy providers,
+                                                        including some tg://proxy /
+                                                        t.me/proxy links
+
+    Telethon's own parser assumes any secret starting with the *characters*
+    "ee" or "dd" is hex with that prefix, and blindly strips them — which
+    corrupts base64 secrets that merely happen to start with those letters
+    (this is exactly what happens with some real t.me/proxy links). We decode
+    it ourselves, using the byte *length* rather than the string prefix to
+    tell a plain secret apart from a prefixed one, and hand Telethon back an
+    unambiguous 32-char hex string.
+    """
+    s = secret.strip()
+
+    def core(raw: bytes) -> bytes | None:
+        if len(raw) == 16:
+            return raw
+        if len(raw) >= 17 and raw[0] in (0xDD, 0xEE):
+            return raw[1:17]  # drop the prefix byte (and, for ee, the domain suffix)
+        return None
+
+    if len(s) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in s):
+        try:
+            c = core(bytes.fromhex(s))
+            if c is not None:
+                return c.hex()
+        except ValueError:
+            pass
+
+    import base64
+    b64 = s.replace("-", "+").replace("_", "/")
+    b64 += "=" * (-len(b64) % 4)
+    try:
+        raw = base64.b64decode(b64, validate=False)
+    except Exception:
+        raw = None
+    if raw:
+        c = core(raw)
+        if c is not None:
+            return c.hex()
+        if len(raw) >= 16:
+            return raw[:16].hex()
+
+    die(
+        f"Couldn't parse MTProxy secret starting with '{secret[:8]}...' as hex or base64 "
+        "(expected it to decode to 16+ bytes)."
+    )
+
+
 def _mtproxy_kwargs_from_parts(host: str | None, port, secret: str | None, source: str) -> dict:
     from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
 
@@ -90,7 +146,7 @@ def _mtproxy_kwargs_from_parts(host: str | None, port, secret: str | None, sourc
         )
     return {
         "connection": ConnectionTcpMTProxyRandomizedIntermediate,
-        "proxy": (host, int(port), secret),
+        "proxy": (host, int(port), _decode_mtproxy_secret(secret)),
     }
 
 
