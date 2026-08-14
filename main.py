@@ -60,11 +60,20 @@ def require_env(*keys: str) -> bool:
 # Subcommands
 # ---------------------------------------------------------------------------
 
+def _collector_cmd(script: str, args: argparse.Namespace) -> list[str]:
+    cmd = [sys.executable, script]
+    if getattr(args, "proxy", None):
+        cmd += ["--proxy", args.proxy]
+    if getattr(args, "channel_concurrency", None) is not None:
+        cmd += ["--concurrency", str(args.channel_concurrency)]
+    return cmd
+
+
 def cmd_collect_configs(args: argparse.Namespace) -> int:
     if not require_env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "CONFIG_CHANNELS_FILE"):
         return 1
     return run(
-        [sys.executable, "collectors/config_collector.py"],
+        _collector_cmd("collectors/config_collector.py", args),
         cwd=ROOT,
         label="Collecting configs from Telegram channels",
     )
@@ -74,7 +83,7 @@ def cmd_collect_proxies(args: argparse.Namespace) -> int:
     if not require_env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "PROXY_CHANNELS_FILE"):
         return 1
     return run(
-        [sys.executable, "collectors/proxy_collector.py"],
+        _collector_cmd("collectors/proxy_collector.py", args),
         cwd=ROOT,
         label="Collecting MTProto proxies from Telegram channels",
     )
@@ -136,6 +145,15 @@ def cmd_best(args: argparse.Namespace) -> int:
     return 0
 
 
+STEP_LABELS = {
+    "cmd_collect_configs": "collect-configs",
+    "cmd_collect_proxies": "collect-proxies",
+    "cmd_test_configs": "test-configs",
+    "cmd_test_proxies": "test-proxies",
+    "cmd_best": "best",
+}
+
+
 def cmd_all(args: argparse.Namespace) -> int:
     steps = [
         cmd_collect_configs,
@@ -144,23 +162,31 @@ def cmd_all(args: argparse.Namespace) -> int:
         cmd_test_proxies,
         cmd_best,
     ]
-    for step in steps:
-        if step == cmd_collect_configs:
-            input("If you're in a censored region turn on your VPN before continuing and press ENTER.")
-        elif step == cmd_test_configs:
-            input("In order to get the most accurate delay-test results please turn off your VPN and press ENTER.")
 
+    print(f"Running the full pipeline: {' -> '.join(STEP_LABELS[s.__name__] for s in steps)}\n")
+
+    if not getattr(args, "yes", False):
+        try:
+            input(
+                "[i] test-configs measures delay from *your* connection, so results will be "
+                "skewed if you're on a VPN during that step. Press ENTER to continue, or Ctrl+C to stop "
+                "(skip this prompt next time with --yes).\n"
+            )
+        except KeyboardInterrupt:
+            print("\nAborted.")
+            return 130
+
+    for step in steps:
         rc = step(args)
         if rc != 0 and not getattr(args, "keep_going", False):
             print(
-                f"\n[!] Pipeline stopped at '{step.__name__}' (exit {rc}). "
-                "Use --keep-going to ignore failures.",
+                f"\n[!] Pipeline stopped at '{STEP_LABELS[step.__name__]}' (exit {rc}). "
+                "Use --keep-going to ignore failures and continue with the remaining steps.",
                 file=sys.stderr,
             )
             return rc
-        if step == cmd_test_configs:
-            input("In order to get the most accurate delay-test results please turn off your VPN.\n")
 
+    print("\nPipeline finished. See output/ for results.")
     return 0
 
 
@@ -175,10 +201,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    proxy_help = (
+        "Proxy for reaching Telegram (socks5://, socks4://, http://, or mtproxy://secret@host:port). "
+        "Defaults to TELEGRAM_PROXY in .env."
+    )
+    channel_concurrency_help = "How many channels to scan at once (default: CHANNEL_CONCURRENCY in .env, or 5)"
+
     p = sub.add_parser("collect-configs", help="Scrape VLESS/VMess/Trojan configs from Telegram")
+    p.add_argument("--proxy", help=proxy_help)
+    p.add_argument("-j", "--channel-concurrency", type=int, default=None, help=channel_concurrency_help)
     p.set_defaults(func=cmd_collect_configs)
 
     p = sub.add_parser("collect-proxies", help="Scrape MTProto/HTTP/SOCKS5 proxies from Telegram")
+    p.add_argument("--proxy", help=proxy_help)
+    p.add_argument("-j", "--channel-concurrency", type=int, default=None, help=channel_concurrency_help)
     p.set_defaults(func=cmd_collect_proxies)
 
     p = sub.add_parser("test-configs", help="Speed-test scraped configs with xray-knife")
@@ -198,6 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("all", help="Run the full pipeline: collect -> test -> rank")
     p.add_argument("--keep-going", action="store_true", help="Continue even if a step fails")
+    p.add_argument("--proxy", help=proxy_help + " Applies to both collect steps.")
+    p.add_argument("-j", "--channel-concurrency", type=int, default=None, help=channel_concurrency_help + " Applies to both collect steps.")
+    p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
     p.set_defaults(func=cmd_all)
 
     return parser

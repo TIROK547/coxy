@@ -16,7 +16,7 @@ The pipeline has five stages, run individually or all at once via the `coxy` CLI
 | 4 | `test-proxies` | `delay-test/test_proxies.py` | Checks liveness/latency of scraped proxies |
 | 5 | `best` | `best_result.py` (via `main.py best`) | Picks the top-N fastest passing configs from the test results |
 
-Run `all` to execute the whole pipeline in order, with prompts to toggle your VPN on/off at the points where that matters (censorship-region scraping vs. accurate local latency testing).
+Run `all` to execute the whole pipeline in order. The two `collect-*` steps scan their channels concurrently rather than one at a time, and can go through a proxy if Telegram is blocked where you're running coxy (see [Reaching Telegram from a censored region](#reaching-telegram-from-a-censored-region)). Before `test-configs` runs, `all` will remind you to turn any VPN **off** for that step, since it measures delay from your own connection — pass `--yes`/`-y` to skip that prompt.
 
 ## Requirements
 
@@ -81,6 +81,44 @@ python main.py test-proxies -i output/raw_proxies.txt -o output/result_proxies.t
 
 `all` accepts `--keep-going` to continue the pipeline even if a step fails.
 
+## Reaching Telegram from a censored region
+
+If Telegram is blocked where you're running coxy, point the `collect-*` steps at a proxy instead of turning a system-wide VPN on and off around them. Two ways to set it, checked in this order:
+
+1. **Per-run flag** (highest priority):
+
+   ```bash
+   python main.py collect-configs --proxy socks5://user:pass@host:port
+   python main.py all --proxy mtproxy://SECRET@host:port
+   ```
+
+2. **Default in `.env`** — set it once and every `collect-*`/`all` run uses it automatically:
+
+   ```env
+   TELEGRAM_PROXY=socks5://user:pass@host:port
+   ```
+
+Supported formats for both:
+
+| Scheme | Example |
+|---|---|
+| `socks5://` | `socks5://user:pass@1.2.3.4:1080` (auth optional) |
+| `socks4://` | `socks4://1.2.3.4:1080` |
+| `http://` | `http://user:pass@1.2.3.4:8080` |
+| `mtproxy://` | `mtproxy://SECRET@1.2.3.4:443` (secret from your MTProto provider or a `tg://proxy` link) |
+
+`socks5`/`socks4`/`http` proxies need `PySocks` (already in `requirements.txt`).
+
+## Speeding up collection
+
+By default `collect-configs` and `collect-proxies` scan up to 5 channels concurrently instead of going through the channel list one by one. Tune it with `-j/--channel-concurrency`, or `CHANNEL_CONCURRENCY` in `.env`:
+
+```bash
+python main.py collect-configs -j 10
+```
+
+Push this too high and you're more likely to hit Telegram's rate limits (coxy will report and skip a channel if that happens, rather than stalling the whole run) — 5–10 is a reasonable range for most accounts.
+
 ## Configuration reference (`.env`)
 
 | Variable | Purpose |
@@ -92,7 +130,9 @@ python main.py test-proxies -i output/raw_proxies.txt -o output/result_proxies.t
 | `RAW_CONFIGS_FILE` / `RAW_PROXIES_FILE` | Raw scrape output |
 | `OUTPUT_CONFIGS_FILE` / `OUTPUT_PROXIES_FILE` | Test-result output |
 | `TOP_N` | Default number of configs kept by `best` |
+| `TELEGRAM_PROXY` | Default proxy for reaching Telegram (`socks5://`, `socks4://`, `http://`, or `mtproxy://`) — see [Reaching Telegram from a censored region](#reaching-telegram-from-a-censored-region) |
 | `MESSAGES_PER_CHANNEL` | How many recent messages to scan per channel |
+| `CHANNEL_CONCURRENCY` | How many channels `collect-configs`/`collect-proxies` scan at once (default 5) |
 | `XRAY_KNIFE` | Path to the xray-knife binary |
 | `XRAY_KNIFE_THREADS` | Concurrency for config speed-testing |
 | `PROXY_CHECK_TIMEOUT` / `PROXY_CHECK_CONCURRENCY` | Proxy liveness-check tuning |
@@ -108,8 +148,8 @@ After a full run, `output/` contains:
 
 ## Notes
 
-- Run `collect-*` from behind a VPN if you're in a region where Telegram is restricted.
-- Run `test-configs` with your VPN **off** to get accurate delay measurements.
+- If Telegram is restricted in your region, use `--proxy`/`TELEGRAM_PROXY` for the `collect-*` steps rather than a system-wide VPN — see [Reaching Telegram from a censored region](#reaching-telegram-from-a-censored-region).
+- Run `test-configs` with your VPN **off** to get accurate delay measurements — `all` will remind you.
 - coxy is a scraping/aggregation tool — it doesn't generate configs or proxies itself, and the quality of results depends entirely on the source channels you configure.
 
 ## License
