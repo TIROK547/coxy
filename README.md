@@ -106,8 +106,9 @@ Supported formats for both:
 | `socks4://` | `socks4://1.2.3.4:1080` |
 | `http://` | `http://user:pass@1.2.3.4:8080` |
 | `mtproxy://` | `mtproxy://SECRET@1.2.3.4:443` (secret from your MTProto provider or a `tg://proxy` link) |
+| `tg://proxy?...` / `https://t.me/proxy?...` | Paste one of Telegram's own share links as-is, e.g. `https://t.me/proxy?server=1.2.3.4&port=443&secret=SECRET` |
 
-`socks5`/`socks4`/`http` proxies need `PySocks` (already in `requirements.txt`).
+Any of these also work through `python-socks` (already in `requirements.txt`) — it's what Telethon uses under the hood for both regular proxies and MTProto.
 
 ## Speeding up collection
 

@@ -48,6 +48,8 @@ def die(msg: str) -> None:
 #   socks4://[user:pass@]host:port
 #   http://[user:pass@]host:port
 #   mtproxy://secret@host:port
+#   tg://proxy?server=...&port=...&secret=...            (Telegram share link)
+#   https://t.me/proxy?server=...&port=...&secret=...    (same, as a web link)
 # ---------------------------------------------------------------------------
 
 def resolve_proxy(cli_value: str | None) -> str | None:
@@ -77,19 +79,35 @@ def _socks_kwargs(scheme: str, parsed) -> dict:
     }
 
 
-def _mtproxy_kwargs(parsed) -> dict:
+def _mtproxy_kwargs_from_parts(host: str | None, port, secret: str | None, source: str) -> dict:
     from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
 
-    secret = parsed.username  # mtproxy://SECRET@host:port
-    if not secret or not parsed.hostname or not parsed.port:
+    if not secret or not host or not port:
         die(
-            "mtproxy:// URL must look like mtproxy://SECRET@host:port "
-            "(the secret comes from your MTProto proxy provider or a tg://proxy link)"
+            f"Couldn't read server/port/secret from the {source}. "
+            "Expected mtproxy://SECRET@host:port, or a tg://proxy / t.me/proxy link "
+            "with server=, port=, and secret= query params."
         )
     return {
         "connection": ConnectionTcpMTProxyRandomizedIntermediate,
-        "proxy": (parsed.hostname, parsed.port, secret),
+        "proxy": (host, int(port), secret),
     }
+
+
+def _mtproxy_kwargs(parsed) -> dict:
+    # mtproxy://SECRET@host:port
+    return _mtproxy_kwargs_from_parts(parsed.hostname, parsed.port, parsed.username, "mtproxy:// URL")
+
+
+def _mtproxy_link_kwargs(parsed) -> dict:
+    # tg://proxy?server=...&port=...&secret=...
+    # https://t.me/proxy?server=...&port=...&secret=...
+    from urllib.parse import parse_qs
+    q = parse_qs(parsed.query)
+    host = q.get("server", [None])[0]
+    port = q.get("port", [None])[0]
+    secret = q.get("secret", [None])[0]
+    return _mtproxy_kwargs_from_parts(host, port, secret, "proxy link")
 
 
 def build_client(session: str, api_id: int, api_hash: str, proxy_url: str | None) -> TelegramClient:
@@ -98,16 +116,29 @@ def build_client(session: str, api_id: int, api_hash: str, proxy_url: str | None
     if proxy_url:
         parsed = urlparse(proxy_url)
         scheme = parsed.scheme.lower()
-        if scheme in ("socks5", "socks4", "http"):
+        is_web_share_link = scheme in ("http", "https") and parsed.netloc.lower() in (
+            "t.me", "telegram.me", "www.t.me", "www.telegram.me",
+        ) and parsed.path.lower() == "/proxy"
+
+        if is_web_share_link:
+            kwargs.update(_mtproxy_link_kwargs(parsed))
+            desc = f"mtproxy (from {parsed.netloc}{parsed.path} link)"
+        elif scheme == "tg" and parsed.netloc.lower() == "proxy":
+            kwargs.update(_mtproxy_link_kwargs(parsed))
+            desc = "mtproxy (from tg://proxy link)"
+        elif scheme in ("socks5", "socks4", "http"):
             kwargs.update(_socks_kwargs(scheme, parsed))
+            desc = f"{scheme}://{parsed.hostname}:{parsed.port}"
         elif scheme == "mtproxy":
             kwargs.update(_mtproxy_kwargs(parsed))
+            desc = f"mtproxy://{parsed.hostname}:{parsed.port}"
         else:
             die(
-                f"Unrecognized proxy scheme '{scheme}://'. "
-                "Use socks5://, socks4://, http://, or mtproxy://"
+                f"Unrecognized proxy value starting with '{proxy_url[:30]}...'. "
+                "Use socks5://, socks4://, http://, mtproxy://secret@host:port, "
+                "or a tg://proxy / t.me/proxy share link."
             )
-        print(f"[i] Connecting to Telegram via {scheme}://{parsed.hostname}:{parsed.port}")
+        print(f"[i] Connecting to Telegram via {desc}")
     return TelegramClient(session, api_id, api_hash, **kwargs)
 
 
