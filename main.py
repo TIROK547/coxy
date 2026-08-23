@@ -134,9 +134,9 @@ def cmd_test_proxies(args: argparse.Namespace) -> int:
 
 
 def cmd_best(args: argparse.Namespace) -> int:
-    input_csv = ROOT / env(env("OUTPUT_CONFIGS_FILE", "output/result_configs.csv"))
+    input_csv = ROOT / env("OUTPUT_CONFIGS_FILE", "output/result_configs.csv")
+    output_dir = ROOT / env("OUTPUT_DIR", "output")
     top_n = getattr(args, "top_n", None) or int(env("TOP_N", "20"))
-    output_dir = ROOT / env(env("OUTPUT_DIR", "output"))
     out_path = output_dir / f"top{top_n}_configs.txt"
     label = env("REMARK_LABEL", "Coxy")
 
