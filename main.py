@@ -84,16 +84,6 @@ def cmd_collect_configs(args: argparse.Namespace) -> int:
     )
 
 
-def cmd_collect_npv(args: argparse.Namespace) -> int:
-    if not require_env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "CONFIG_CHANNELS_FILE"):
-        return 1
-    return run(
-        _collector_cmd("collectors/npv_collector.py", args),
-        cwd=ROOT,
-        label="Collecting NapsternetV config files from Telegram channels",
-    )
-
-
 def cmd_collect_proxies(args: argparse.Namespace) -> int:
     if not require_env("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "PROXY_CHANNELS_FILE"):
         return 1
@@ -175,14 +165,12 @@ STEP_LABELS = {
     "cmd_collect_proxies": "collect-proxies",
     "cmd_test_configs": "test-configs",
     "cmd_test_proxies": "test-proxies",
-    "cmd_collect_npv": "collect-npv",
     "cmd_best": "best",
 }
 
 
 def cmd_all(args: argparse.Namespace) -> int:
     steps = [
-        cmd_collect_npv,
         cmd_collect_configs,
         cmd_collect_proxies,
         cmd_test_configs,
@@ -308,19 +296,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompts")
     p.set_defaults(func=cmd_all)
-
-    p = sub.add_parser(
-        "collect-npv", help="Download NapsternetV (.npv) config files from Telegram"
-    )
-    p.add_argument("--proxy", help=proxy_help)
-    p.add_argument(
-        "-j",
-        "--channel-concurrency",
-        type=int,
-        default=None,
-        help=channel_concurrency_help,
-    )
-    p.set_defaults(func=cmd_collect_npv)
 
     return parser
 
