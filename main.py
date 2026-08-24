@@ -109,6 +109,19 @@ def cmd_test_configs(args: argparse.Namespace) -> int:
 
 
 def cmd_test_proxies(args: argparse.Namespace) -> int:
+    input_file = ROOT / (
+        getattr(args, "input", None)
+        or env("RAW_PROXIES_FILE", "output/raw_proxies.txt")
+    )
+    if not input_file.exists() or not input_file.read_text(encoding="utf-8").strip():
+        # Not a real failure — collect-proxies can legitimately come back
+        # empty (e.g. its channels were rate-limited that run). Don't let an
+        # optional, secondary collection stream hard-stop the whole `all`
+        # pipeline before it reaches `best`.
+        print(f"\n==> Testing proxies")
+        print(f"[i] {input_file} is empty or missing — no proxies to test, skipping.")
+        return 0
+
     cmd = [sys.executable, "delay-test/test_proxies.py"]
     if getattr(args, "input", None):
         cmd += ["-i", args.input]
@@ -171,8 +184,8 @@ STEP_LABELS = {
 
 def cmd_all(args: argparse.Namespace) -> int:
     steps = [
-        cmd_collect_configs,
         cmd_collect_proxies,
+        cmd_collect_configs,
         cmd_test_configs,
         cmd_test_proxies,
         cmd_best,

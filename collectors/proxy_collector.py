@@ -18,7 +18,8 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 from common import (ROOT, Progress, build_client, die, env, env_int,
-                    make_resolver, resolve_proxy, scan_channels)
+                    make_resolver, resolve_proxy, save_resolve_cache,
+                    scan_channels)
 from telethon.errors import FloodWaitError
 from telethon.tl.types import KeyboardButtonUrl
 
@@ -119,10 +120,13 @@ async def main() -> None:
     results: list[str] = []
     write_lock = asyncio.Lock()
     progress = Progress(len(channels))
-    resolve = make_resolver(
+    resolve_cache_path = ROOT / env("RESOLVE_CACHE_FILE", "output/.resolve_cache.json")
+    resolve, resolve_cache = make_resolver(
         client,
         concurrency=env_int("RESOLVE_CONCURRENCY", 2),
         delay=env_int("RESOLVE_DELAY_MS", 300) / 1000,
+        cache_path=resolve_cache_path,
+        max_new=env_int("MAX_NEW_RESOLVES_PER_RUN", 40),
     )
 
     async def worker(channel: str) -> None:
@@ -156,6 +160,7 @@ async def main() -> None:
         await progress.report(channel, ok=True, found=found)
 
     await scan_channels(channels, concurrency, worker)
+    save_resolve_cache(resolve_cache_path, resolve_cache)
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(

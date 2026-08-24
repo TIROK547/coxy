@@ -10,6 +10,7 @@ Shared helpers for coxy's Telegram collectors:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -258,38 +259,93 @@ async def scan_channels(channels: list[str], concurrency: int, worker) -> None:
     await asyncio.gather(*(guarded(ch) for ch in channels))
 
 
-def make_resolver(client: TelegramClient, concurrency: int = 2, delay: float = 0.3):
+def load_resolve_cache(path: Path) -> dict:
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def save_resolve_cache(path: Path, cache: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(cache, indent=2, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def make_resolver(
+    client: TelegramClient,
+    concurrency: int = 2,
+    delay: float = 0.3,
+    cache_path: Path | None = None,
+    max_new: int = 40,
+):
     """
-    Returns an async resolve(channel) -> InputPeer | None coroutine for
-    turning a channel username into something iter_messages() can use.
+    Returns (resolve, cache):
+      resolve(channel) -> (InputPeer | None, error_or_None)
+      cache: the in-memory dict backing cache_path — save it yourself with
+             save_resolve_cache() after scan_channels() finishes.
 
     client.get_entity(username) makes a fresh ResolveUsernameRequest to
     Telegram *every single call*, cache or no cache — Telethon's own docs say
     this "will start hitting flood waits around 50 usernames in a short
     period of time." client.get_input_entity(username) checks the local
     session cache first and only hits the network for usernames it hasn't
-    seen before, so repeat runs against the same channel list get cheaper
-    over time as the session accumulates cached entities.
+    seen before.
 
-    This also throttles resolution with its own (smaller, slower) semaphore
-    and a delay between calls, independent of the main per-channel scan
-    concurrency — a high --concurrency is fine for fetching messages from
-    already-resolved channels, but a burst of concurrent *first-time*
-    resolves is exactly what trips the flood wait.
+    In practice, throttling speed (concurrency/delay) alone wasn't enough:
+    adding ~275 brand-new channels in one run still hit a flood wait, and a
+    worse one than before — repeat offenses seem to get a longer penalty.
+    Slowing new resolves down doesn't change how MANY of them happen in a
+    run, and that total count is what actually matters.
 
-    Once a FloodWaitError hits, every channel not yet resolved in this run
-    gets None immediately (no exception, no further network calls) instead
-    of also waiting out the growing cooldown — there's no point burning the
-    wait time on channels that would just flood again in the same run.
-    Already-resolved channels from before the flood keep their results.
+    So this caps *how many genuinely new (never-seen) channels* get resolved
+    per run (max_new) — the rest are deferred, not retried, until a later
+    run. Combined with cache_path (persisted across runs, separate from and
+    in addition to Telethon's own session cache), that means:
+      - a channel found dead (UsernameNotOccupiedError) is remembered
+        forever and never re-attempted, instead of re-flooding the account
+        chasing channels that don't exist
+      - a big batch of new channels gets spread across several runs
+        automatically (40/run by default) instead of all landing in one,
+        which is what actually avoids retriggering the flood
+      - already-known-good channels aren't capped at all — get_input_entity
+        pulls them from Telethon's session cache for free regardless of
+        max_new
+
+    Once a FloodWaitError hits mid-run anyway, every channel not yet
+    resolved gets None immediately (no exception, no further network calls)
+    instead of also waiting out the growing cooldown.
     """
     sem = asyncio.Semaphore(max(1, concurrency))
     flood_seconds: int | None = None
+    cache = load_resolve_cache(cache_path) if cache_path else {}
+    new_resolved_this_run = 0
+    lock = asyncio.Lock()
 
     async def resolve(channel: str):
-        nonlocal flood_seconds
+        nonlocal flood_seconds, new_resolved_this_run
+        key = channel.lower()
+        cached = cache.get(key)
+
+        if cached and cached.get("status") == "dead":
+            return None, "known dead (cached, not re-tried)"
+
         if flood_seconds is not None:
             return None, f"rate-limited (resolve), wait {flood_seconds}s"
+
+        if cached is None:
+            async with lock:
+                if new_resolved_this_run >= max_new:
+                    return (
+                        None,
+                        f"deferred (hit {max_new}/run new-channel cap, retried next run)",
+                    )
+                new_resolved_this_run += 1
+
         async with sem:
             if flood_seconds is not None:
                 return None, f"rate-limited (resolve), wait {flood_seconds}s"
@@ -299,9 +355,18 @@ def make_resolver(client: TelegramClient, concurrency: int = 2, delay: float = 0
                 flood_seconds = e.seconds
                 return None, f"rate-limited (resolve), wait {e.seconds}s"
             except Exception as e:
-                return None, str(e)
+                msg = str(e)
+                if (
+                    "no user has" in msg.lower()
+                    or "nobody is using this username" in msg.lower()
+                ):
+                    cache[key] = {"status": "dead"}
+                return None, msg
+            cache[key] = {"status": "ok"}
             if delay:
                 await asyncio.sleep(delay)
             return entity, None
+
+    return resolve, cache
 
     return resolve
