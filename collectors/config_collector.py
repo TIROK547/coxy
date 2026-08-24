@@ -28,7 +28,7 @@ from io import BytesIO
 from pathlib import Path
 
 from common import (ROOT, Progress, build_client, die, env, env_int,
-                    resolve_proxy, scan_channels)
+                    make_resolver, resolve_proxy, scan_channels)
 from telethon.errors import FloodWaitError
 
 CONFIG_RE = re.compile(r'(vless|vmess|trojan)://[^\s<>"\']+', re.IGNORECASE)
@@ -184,16 +184,20 @@ async def main() -> None:
 
     write_lock = asyncio.Lock()
     progress = Progress(len(channels))
+    resolve = make_resolver(
+        client,
+        concurrency=env_int("RESOLVE_CONCURRENCY", 2),
+        delay=env_int("RESOLVE_DELAY_MS", 300) / 1000,
+    )
 
     if collect_npv:
         npv_dir.mkdir(parents=True, exist_ok=True)
 
     async def worker(channel: str) -> None:
         nonlocal npv_saved
-        try:
-            entity = await client.get_entity(channel)
-        except Exception as e:
-            await progress.report(channel, ok=False, found=0, error=str(e))
+        entity, err = await resolve(channel)
+        if entity is None:
+            await progress.report(channel, ok=False, found=0, error=err)
             return
 
         found = 0

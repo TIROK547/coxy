@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -52,6 +53,7 @@ def die(msg: str) -> None:
 #   https://t.me/proxy?server=...&port=...&secret=...    (same, as a web link)
 # ---------------------------------------------------------------------------
 
+
 def resolve_proxy(cli_value: str | None) -> str | None:
     """Return the proxy URL to use: --proxy flag wins, else TELEGRAM_PROXY from .env."""
     return cli_value or env("TELEGRAM_PROXY") or None
@@ -61,7 +63,9 @@ def _socks_kwargs(scheme: str, parsed) -> dict:
     try:
         import socks
     except ImportError:
-        die("socks5/socks4/http proxies need PySocks. Install it with: pip install PySocks")
+        die(
+            "socks5/socks4/http proxies need PySocks. Install it with: pip install PySocks"
+        )
 
     proxy_types = {"socks5": socks.SOCKS5, "socks4": socks.SOCKS4, "http": socks.HTTP}
     if not parsed.hostname or not parsed.port:
@@ -72,9 +76,9 @@ def _socks_kwargs(scheme: str, parsed) -> dict:
             proxy_types[scheme],
             parsed.hostname,
             parsed.port,
-            True,                # rdns
-            parsed.username,     # username (or None)
-            parsed.password,     # password (or None)
+            True,  # rdns
+            parsed.username,  # username (or None)
+            parsed.password,  # password (or None)
         )
     }
 
@@ -116,6 +120,7 @@ def _decode_mtproxy_secret(secret: str) -> str:
             pass
 
     import base64
+
     b64 = s.replace("-", "+").replace("_", "/")
     b64 += "=" * (-len(b64) % 4)
     try:
@@ -135,7 +140,9 @@ def _decode_mtproxy_secret(secret: str) -> str:
     )
 
 
-def _mtproxy_kwargs_from_parts(host: str | None, port, secret: str | None, source: str) -> dict:
+def _mtproxy_kwargs_from_parts(
+    host: str | None, port, secret: str | None, source: str
+) -> dict:
     from telethon.network import ConnectionTcpMTProxyRandomizedIntermediate
 
     if not secret or not host or not port:
@@ -152,13 +159,16 @@ def _mtproxy_kwargs_from_parts(host: str | None, port, secret: str | None, sourc
 
 def _mtproxy_kwargs(parsed) -> dict:
     # mtproxy://SECRET@host:port
-    return _mtproxy_kwargs_from_parts(parsed.hostname, parsed.port, parsed.username, "mtproxy:// URL")
+    return _mtproxy_kwargs_from_parts(
+        parsed.hostname, parsed.port, parsed.username, "mtproxy:// URL"
+    )
 
 
 def _mtproxy_link_kwargs(parsed) -> dict:
     # tg://proxy?server=...&port=...&secret=...
     # https://t.me/proxy?server=...&port=...&secret=...
     from urllib.parse import parse_qs
+
     q = parse_qs(parsed.query)
     host = q.get("server", [None])[0]
     port = q.get("port", [None])[0]
@@ -166,15 +176,25 @@ def _mtproxy_link_kwargs(parsed) -> dict:
     return _mtproxy_kwargs_from_parts(host, port, secret, "proxy link")
 
 
-def build_client(session: str, api_id: int, api_hash: str, proxy_url: str | None) -> TelegramClient:
+def build_client(
+    session: str, api_id: int, api_hash: str, proxy_url: str | None
+) -> TelegramClient:
     """Build a TelegramClient, optionally routed through a SOCKS/HTTP/MTProto proxy."""
     kwargs = {}
     if proxy_url:
         parsed = urlparse(proxy_url)
         scheme = parsed.scheme.lower()
-        is_web_share_link = scheme in ("http", "https") and parsed.netloc.lower() in (
-            "t.me", "telegram.me", "www.t.me", "www.telegram.me",
-        ) and parsed.path.lower() == "/proxy"
+        is_web_share_link = (
+            scheme in ("http", "https")
+            and parsed.netloc.lower()
+            in (
+                "t.me",
+                "telegram.me",
+                "www.t.me",
+                "www.telegram.me",
+            )
+            and parsed.path.lower() == "/proxy"
+        )
 
         if is_web_share_link:
             kwargs.update(_mtproxy_link_kwargs(parsed))
@@ -202,6 +222,7 @@ def build_client(session: str, api_id: int, api_hash: str, proxy_url: str | None
 # Concurrent channel scanning
 # ---------------------------------------------------------------------------
 
+
 class Progress:
     """Thread/task-safe-ish progress printer for concurrent channel scans."""
 
@@ -210,7 +231,9 @@ class Progress:
         self.done = 0
         self._lock = asyncio.Lock()
 
-    async def report(self, channel: str, ok: bool, found: int, error: str | None = None) -> None:
+    async def report(
+        self, channel: str, ok: bool, found: int, error: str | None = None
+    ) -> None:
         async with self._lock:
             self.done += 1
             tag = f"[{self.done}/{self.total}]"
@@ -233,3 +256,52 @@ async def scan_channels(channels: list[str], concurrency: int, worker) -> None:
             await worker(channel)
 
     await asyncio.gather(*(guarded(ch) for ch in channels))
+
+
+def make_resolver(client: TelegramClient, concurrency: int = 2, delay: float = 0.3):
+    """
+    Returns an async resolve(channel) -> InputPeer | None coroutine for
+    turning a channel username into something iter_messages() can use.
+
+    client.get_entity(username) makes a fresh ResolveUsernameRequest to
+    Telegram *every single call*, cache or no cache — Telethon's own docs say
+    this "will start hitting flood waits around 50 usernames in a short
+    period of time." client.get_input_entity(username) checks the local
+    session cache first and only hits the network for usernames it hasn't
+    seen before, so repeat runs against the same channel list get cheaper
+    over time as the session accumulates cached entities.
+
+    This also throttles resolution with its own (smaller, slower) semaphore
+    and a delay between calls, independent of the main per-channel scan
+    concurrency — a high --concurrency is fine for fetching messages from
+    already-resolved channels, but a burst of concurrent *first-time*
+    resolves is exactly what trips the flood wait.
+
+    Once a FloodWaitError hits, every channel not yet resolved in this run
+    gets None immediately (no exception, no further network calls) instead
+    of also waiting out the growing cooldown — there's no point burning the
+    wait time on channels that would just flood again in the same run.
+    Already-resolved channels from before the flood keep their results.
+    """
+    sem = asyncio.Semaphore(max(1, concurrency))
+    flood_seconds: int | None = None
+
+    async def resolve(channel: str):
+        nonlocal flood_seconds
+        if flood_seconds is not None:
+            return None, f"rate-limited (resolve), wait {flood_seconds}s"
+        async with sem:
+            if flood_seconds is not None:
+                return None, f"rate-limited (resolve), wait {flood_seconds}s"
+            try:
+                entity = await client.get_input_entity(channel)
+            except FloodWaitError as e:
+                flood_seconds = e.seconds
+                return None, f"rate-limited (resolve), wait {e.seconds}s"
+            except Exception as e:
+                return None, str(e)
+            if delay:
+                await asyncio.sleep(delay)
+            return entity, None
+
+    return resolve
