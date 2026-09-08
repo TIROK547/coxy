@@ -153,6 +153,3 @@ After a full run, `output/` contains:
 - Run `test-configs` with your VPN **off** to get accurate delay measurements — `all` will remind you.
 - coxy is a scraping/aggregation tool — it doesn't generate configs or proxies itself, and the quality of results depends entirely on the source channels you configure.
 
-## License
-
-No license specified yet — add one if you intend for others to reuse this code.

@@ -18,8 +18,7 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 from common import (ROOT, Progress, build_client, die, env, env_int,
-                    make_resolver, resolve_proxy, save_resolve_cache,
-                    scan_channels)
+                    resolve_proxy, scan_channels)
 from telethon.errors import FloodWaitError
 from telethon.tl.types import KeyboardButtonUrl
 
@@ -120,19 +119,12 @@ async def main() -> None:
     results: list[str] = []
     write_lock = asyncio.Lock()
     progress = Progress(len(channels))
-    resolve_cache_path = ROOT / env("RESOLVE_CACHE_FILE", "output/.resolve_cache.json")
-    resolve, resolve_cache = make_resolver(
-        client,
-        concurrency=env_int("RESOLVE_CONCURRENCY", 2),
-        delay=env_int("RESOLVE_DELAY_MS", 300) / 1000,
-        cache_path=resolve_cache_path,
-        max_new=env_int("MAX_NEW_RESOLVES_PER_RUN", 40),
-    )
 
     async def worker(channel: str) -> None:
-        entity, err = await resolve(channel)
-        if entity is None:
-            await progress.report(channel, ok=False, found=0, error=err)
+        try:
+            entity = await client.get_entity(channel)
+        except Exception as e:
+            await progress.report(channel, ok=False, found=0, error=str(e))
             return
 
         found = 0
@@ -156,11 +148,16 @@ async def main() -> None:
                 channel, ok=False, found=found, error=f"rate-limited, wait {e.seconds}s"
             )
             return
+        except Exception as e:
+            # Anything else (private/banned/deleted channel, missing permissions,
+            # a transient network error, etc.) should skip this one channel, not
+            # take down the whole scan.
+            await progress.report(channel, ok=False, found=found, error=str(e))
+            return
 
         await progress.report(channel, ok=True, found=found)
 
     await scan_channels(channels, concurrency, worker)
-    save_resolve_cache(resolve_cache_path, resolve_cache)
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     output_file.write_text(

@@ -10,7 +10,6 @@ Shared helpers for coxy's Telegram collectors:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 from pathlib import Path
@@ -18,7 +17,6 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
@@ -247,126 +245,24 @@ class Progress:
 async def scan_channels(channels: list[str], concurrency: int, worker) -> None:
     """
     Run `worker(channel)` for every channel, `concurrency` at a time, instead of
-    one channel after another. `worker` is an async callable that does its own
-    error handling / progress reporting.
+    one channel after another. `worker` is expected to do its own error
+    handling / progress reporting, but as a safety net, an exception that
+    escapes a single worker is caught here too, so one bad channel can never
+    take down the whole scan (asyncio.gather would otherwise cancel every
+    other in-flight channel the moment one task raises).
     """
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def guarded(channel: str):
         async with sem:
-            await worker(channel)
+            try:
+                await worker(channel)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                # Should be rare — workers are expected to catch and report
+                # their own per-channel errors — but never let one channel's
+                # bug or an unanticipated error type kill the whole scan.
+                print(f"[!] {channel}: unexpected error, skipped ({e})")
 
     await asyncio.gather(*(guarded(ch) for ch in channels))
-
-
-def load_resolve_cache(path: Path) -> dict:
-    if path.exists():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def save_resolve_cache(path: Path, cache: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(cache, indent=2, ensure_ascii=False, sort_keys=True),
-        encoding="utf-8",
-    )
-
-
-def make_resolver(
-    client: TelegramClient,
-    concurrency: int = 2,
-    delay: float = 0.3,
-    cache_path: Path | None = None,
-    max_new: int = 40,
-):
-    """
-    Returns (resolve, cache):
-      resolve(channel) -> (InputPeer | None, error_or_None)
-      cache: the in-memory dict backing cache_path — save it yourself with
-             save_resolve_cache() after scan_channels() finishes.
-
-    client.get_entity(username) makes a fresh ResolveUsernameRequest to
-    Telegram *every single call*, cache or no cache — Telethon's own docs say
-    this "will start hitting flood waits around 50 usernames in a short
-    period of time." client.get_input_entity(username) checks the local
-    session cache first and only hits the network for usernames it hasn't
-    seen before.
-
-    In practice, throttling speed (concurrency/delay) alone wasn't enough:
-    adding ~275 brand-new channels in one run still hit a flood wait, and a
-    worse one than before — repeat offenses seem to get a longer penalty.
-    Slowing new resolves down doesn't change how MANY of them happen in a
-    run, and that total count is what actually matters.
-
-    So this caps *how many genuinely new (never-seen) channels* get resolved
-    per run (max_new) — the rest are deferred, not retried, until a later
-    run. Combined with cache_path (persisted across runs, separate from and
-    in addition to Telethon's own session cache), that means:
-      - a channel found dead (UsernameNotOccupiedError) is remembered
-        forever and never re-attempted, instead of re-flooding the account
-        chasing channels that don't exist
-      - a big batch of new channels gets spread across several runs
-        automatically (40/run by default) instead of all landing in one,
-        which is what actually avoids retriggering the flood
-      - already-known-good channels aren't capped at all — get_input_entity
-        pulls them from Telethon's session cache for free regardless of
-        max_new
-
-    Once a FloodWaitError hits mid-run anyway, every channel not yet
-    resolved gets None immediately (no exception, no further network calls)
-    instead of also waiting out the growing cooldown.
-    """
-    sem = asyncio.Semaphore(max(1, concurrency))
-    flood_seconds: int | None = None
-    cache = load_resolve_cache(cache_path) if cache_path else {}
-    new_resolved_this_run = 0
-    lock = asyncio.Lock()
-
-    async def resolve(channel: str):
-        nonlocal flood_seconds, new_resolved_this_run
-        key = channel.lower()
-        cached = cache.get(key)
-
-        if cached and cached.get("status") == "dead":
-            return None, "known dead (cached, not re-tried)"
-
-        if flood_seconds is not None:
-            return None, f"rate-limited (resolve), wait {flood_seconds}s"
-
-        if cached is None:
-            async with lock:
-                if new_resolved_this_run >= max_new:
-                    return (
-                        None,
-                        f"deferred (hit {max_new}/run new-channel cap, retried next run)",
-                    )
-                new_resolved_this_run += 1
-
-        async with sem:
-            if flood_seconds is not None:
-                return None, f"rate-limited (resolve), wait {flood_seconds}s"
-            try:
-                entity = await client.get_input_entity(channel)
-            except FloodWaitError as e:
-                flood_seconds = e.seconds
-                return None, f"rate-limited (resolve), wait {e.seconds}s"
-            except Exception as e:
-                msg = str(e)
-                if (
-                    "no user has" in msg.lower()
-                    or "nobody is using this username" in msg.lower()
-                ):
-                    cache[key] = {"status": "dead"}
-                return None, msg
-            cache[key] = {"status": "ok"}
-            if delay:
-                await asyncio.sleep(delay)
-            return entity, None
-
-    return resolve, cache
-
-    return resolve
